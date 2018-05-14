@@ -13,9 +13,9 @@ Parameters:
     Type: AWS::EC2::KeyPair::KeyName
     ConstraintDescription: A valid EC2 Keyname is required!
   CBServerAMI:
-    Description: AMI Id to use for the CBER instance
+    Description: AMI identifier for the new Cb Response instance. See https://wiki.centos.org/Cloud/AWS for a list of CentOS 6 AMIs. Default is the CentOS 6 AMI for us-east-1.
     Type: AWS::EC2::Image::Id
-    ConstraintDescription: A valid AMI ID required
+    ConstraintDescription: Must be a CentOS 6 AMI from https://wiki.centos.org/Cloud/AWS for the region where this stack is created.
     Default: 'ami-e3fdd999'
   InstanceType:
     AllowedValues:
@@ -48,6 +48,10 @@ Parameters:
     NoEcho: 'true'
     ConstraintDescription: A password is required for the cb 'admin' user
     Description: Password for the cb 'admin' user
+  AdminEmail:
+    Type: String
+    ConstraintDescription: A valid email address is required for the cb 'admin' user
+    Description: Email address for the cb 'admin' user
 Conditions:
   EbsOptimized: !Or
     - !Equals
@@ -194,15 +198,41 @@ Resources:
             - "mkfs.ext4 /dev/xvdn\n"
             - "echo '/dev/xvdn /cb ext4  defaults  1 1' >> /etc/fstab\n"
             - "mount /cb\n"
-            - "mkdir /cb/logs\n"
-            - "mkdir /cb/data\n"
-            - "ln -s /cb/logs /var/log/cb\n"
             - "# install cb-enterprise\n"
             - "yum install -y cb-enterprise\n"
-            - ""
+            - "mkdir /cb/logs\n"
+            - "mv /var/log/cb/* /cb/logs/\n"
+            - "rmdir /var/log/cb\n"
+            - "mkdir /cb/data\n"
+            - "ln -s /cb/logs /var/log/cb\n"
+            - "# build cbinit.ini\n"
+            - "echo '[Config]' > cbinit.ini\n"
+            - "echo 'root_storage_path=/cb/data' >> cbinit.ini\n"
+            - "echo 'admin_username=admin' >> cbinit.ini\n"
+            - "echo 'admin_first_name=cbr' >> cbinit.ini\n"
+            - "echo 'admin_last_name=admin' >> cbinit.ini\n"
+            - !Join
+              - ''
+              - - "echo 'admin_email="
+                - !Ref 'AdminEmail'
+                - "' >> cbinit.ini\n"
+            - !Join
+              - ''
+              - - "echo 'admin_password="
+                - !Ref 'AdminPassword'
+                - "' >> cbinit.ini\n"
+            - "echo 'service_autostart=1' >> cbinit.ini\n"
+            - "echo 'force_reinit=1' >> cbinit.ini\n"
+            - !Join
+              - ''
+              - - "echo 'default_sensor_server_url=https://"
+                - !Ref 'CbServerElasticIP'
+                - "' >> cbinit.ini\n"
+            - "echo 'alliance_comms_enabled=1' >> cbinit.ini\n"
+            - "echo 'alliance_statistics_enabled=1' >> cbinit.ini\n"
+            - "# Run cbinit\n"
+            - "/usr/share/cb/cbinit cbinit.ini\n"
             - "# Clean up\n"
-            - "rm -rf $INSTALL_DIR\n"
-            - "rm -rf /root/configs\n"
             - "echo END\n"
   CbServerElasticIPAssociation:
     Type: AWS::EC2::EIPAssociation
