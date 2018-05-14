@@ -1,0 +1,292 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Developer Relations Cb Response CloudFormation template
+Parameters:
+  TrustedNetwork:
+    Description: CIDR range of trusted network for SSH access (defaults to allow SSH from anywhere)
+    Default: '0.0.0.0/0'
+    Type: String
+  LicenseRPM:
+    Description: URL to Cb Response license RPM file
+    Type: String
+  KeyName:
+    Description: Name of an existing EC2 KeyPair to enable SSH access
+    Type: AWS::EC2::KeyPair::KeyName
+    ConstraintDescription: A valid EC2 Keyname is required!
+  CBServerAMI:
+    Description: AMI Id to use for the CBER instance
+    Type: AWS::EC2::Image::Id
+    ConstraintDescription: A valid AMI ID required
+    Default: 'ami-e3fdd999'
+  InstanceType:
+    AllowedValues:
+      - t2.medium
+      - t2.large
+      - m4.large
+      - r3.large
+      - r3.xlarge
+      - r3.2xlarge
+      - r3.4xlarge
+      - r3.8xlarge
+    ConstraintDescription: must be a valid EC2 instance type.
+    Default: t2.medium
+    Description: CB Server EC2 instance type
+    Type: String
+  DataVolSize:
+    Type: String
+    Default: '20'
+    Description: Provide the size for the DATA volume in GiB.
+  Description:
+    Type: String
+    Default: ''
+    Description: Provide a description for this stack
+  ServerName:
+    Type: String
+    Default: ''
+    Description: Provide a Server for this Stack
+  AdminPassword:
+    Type: String
+    NoEcho: 'true'
+    ConstraintDescription: A password is required for the cb 'admin' user
+    Description: Password for the cb 'admin' user
+Conditions:
+  EbsOptimized: !Or
+    - !Equals
+      - !Ref 'InstanceType'
+      - m4.large
+    - !Equals
+      - !Ref 'InstanceType'
+      - r3.xlarge
+    - !Equals
+      - !Ref 'InstanceType'
+      - r3.2xlarge
+    - !Equals
+      - !Ref 'InstanceType'
+      - r3.4xlarge
+Resources:
+  CbVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: '10.10.5.0/27'
+      InstanceTenancy: default
+      EnableDnsSupport: 'true'
+      EnableDnsHostnames: 'true'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - _
+            - - 'cbr_vpc'
+              - !Ref 'ServerName'
+  CbServerSegment:
+    Type: AWS::EC2::Subnet
+    Properties:
+      MapPublicIpOnLaunch: 'true'
+      CidrBlock: '10.10.5.0/27'
+      AvailabilityZone: !Select
+        - '1'
+        - !GetAZs
+          Ref: AWS::Region
+      VpcId: !Ref 'CbVPC'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - _
+            - - 'cbr_segment'
+              - !Ref 'ServerName'
+  CbInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Join
+            - _
+            - - 'cbr_gateway'
+              - !Ref 'ServerName'
+  CbVPCDhcpOptions:
+    Type: AWS::EC2::DHCPOptions
+    Properties:
+      DomainName: !Join
+        - .
+        - - !Ref 'AWS::Region'
+          - compute.internal
+      DomainNameServers:
+        - AmazonProvidedDNS
+      Tags:
+        - Key: Name
+          Value: !Join
+            - _
+            - - 'cbr_dhcp'
+              - !Ref 'ServerName'
+  CbNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref 'CbVPC'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - _
+            - - 'cbr_acl'
+              - !Ref 'ServerName'
+  CbServerRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref 'CbVPC'
+      Tags:
+        - Key: Name
+          Value: !Join
+            - _
+            - - 'cbr_route'
+              - !Ref 'ServerName'
+              - Public
+  CbServerElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: 'vpc'
+    DependsOn: 
+      - 'CbVPC'
+  CbServerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      DisableApiTermination: 'false'
+      EbsOptimized: !If
+        - EbsOptimized
+        - 'true'
+        - 'false'
+      ImageId: !Ref 'CBServerAMI'
+      InstanceType: !Ref 'InstanceType'
+      KeyName: !Ref 'KeyName'
+      Monitoring: 'true'
+      Tags:
+        - Key: Name
+          Value: !Ref 'ServerName'
+        - Key: description
+          Value: 'Cb Response'
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: 'false'
+          DeleteOnTermination: 'true'
+          Description: Primary Network interface
+          DeviceIndex: 0
+          SubnetId: !Ref 'CbServerSegment'
+          GroupSet:
+            - !Ref 'CbServerSecurityGroup'
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: '16'
+            VolumeType: gp2
+        - DeviceName: /dev/sdn
+          Ebs:
+            VolumeSize: !Ref 'DataVolSize'
+            VolumeType: gp2
+      UserData: !Base64
+        Fn::Join:
+          - ''
+          - - "#!/bin/bash\n"
+            - "set -ex\n\n"
+            - "# Download license RPM\n"
+            - !Join
+              - ''
+              - - 'curl -o cbr-license.rpm "'
+                - !Ref 'LicenseRPM'
+                - "\"\n"
+            - "rpm -Uvh cbr-license.rpm\n"
+            - "# Create directory structure\n"
+            - "mkdir /cb\n"
+            - "mkfs.ext4 /dev/xvdn\n"
+            - "echo '/dev/xvdn /cb ext4  defaults  1 1' >> /etc/fstab\n"
+            - "mount /cb\n"
+            - "mkdir /cb/logs\n"
+            - "mkdir /cb/data\n"
+            - "ln -s /cb/logs /var/log/cb\n"
+            - "# install cb-enterprise\n"
+            - "yum install -y cb-enterprise\n"
+            - ""
+            - "# Clean up\n"
+            - "rm -rf $INSTALL_DIR\n"
+            - "rm -rf /root/configs\n"
+            - "echo END\n"
+  CbServerElasticIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt CbServerElasticIP.AllocationId
+      InstanceId: !Ref 'CbServerInstance'
+  CbServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup for Cb Response
+      VpcId: !Ref 'CbVPC'
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: !Ref 'TrustedNetwork'
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: '0.0.0.0/0'
+        - IpProtocol: icmp
+          FromPort: '-1'
+          ToPort: '-1'
+          CidrIp: '0.0.0.0/0'
+      SecurityGroupEgress:
+        - IpProtocol: '-1'
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: !Ref 'ServerName'
+  CbEgressNetworkAcl:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: '0.0.0.0/0'
+      Egress: true
+      Protocol: '-1'
+      RuleAction: allow
+      RuleNumber: '100'
+      NetworkAclId: !Ref 'CbNetworkAcl'
+  CbIngressNetworkAcl:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: '0.0.0.0/0'
+      Protocol: '-1'
+      RuleAction: allow
+      RuleNumber: '100'
+      NetworkAclId: !Ref 'CbNetworkAcl'
+  CbServerSegmentToNetworkAcl:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref 'CbNetworkAcl'
+      SubnetId: !Ref 'CbServerSegment'
+  CbVPCGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref 'CbVPC'
+      InternetGatewayId: !Ref 'CbInternetGateway'
+  CbServerSegmentRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: '0.0.0.0/0'
+      RouteTableId: !Ref 'CbServerRouteTable'
+      GatewayId: !Ref 'CbInternetGateway'
+  CbSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref 'CbServerSegment'
+      RouteTableId: !Ref 'CbServerRouteTable'
+  CbVPCDhcpOptionsToVpcAssociation:
+    Type: AWS::EC2::VPCDHCPOptionsAssociation
+    Properties:
+      VpcId: !Ref 'CbVPC'
+      DhcpOptionsId: !Ref 'CbVPCDhcpOptions'
+Outputs:
+  WebConsoleUrl:
+    Value: !Join
+        - '://'
+        - - "https"
+          - !Ref 'CbServerElasticIP'
+  InstancePrivateAddress:
+    Value: !GetAtt 'CbServerInstance.PrivateIp'
+  InstancePublicAddress:
+    Value: !Ref 'CbServerElasticIP'
