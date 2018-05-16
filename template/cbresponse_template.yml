@@ -186,6 +186,9 @@ Resources:
           - ''
           - - "#!/bin/bash\n"
             - "set -ex\n\n"
+            - "# Download EPEL and cloudformation RPM\n"
+            - "yum install -y http://dl.fedoraproject.org/pub/epel/6/x86_64/epel-release-6-8.noarch.rpm\n"
+            - "yum install -y https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-1.4-5.amzn1.noarch.rpm\n"
             - "# Download license RPM\n"
             - !Join
               - ''
@@ -232,8 +235,18 @@ Resources:
             - "echo 'alliance_statistics_enabled=1' >> cbinit.ini\n"
             - "# Run cbinit\n"
             - "/usr/share/cb/cbinit cbinit.ini\n"
-            - "# Clean up\n"
+            - "# Signal that we're done\n"
+            - !Join
+              - ''
+              - - "/opt/aws/bin/cfn-signal -e 0 --stack "
+                - !Ref 'AWS::StackName'
+                - " --resource CbServerInstance --region "
+                - !Ref 'AWS::Region'
+                - "\n"
             - "echo END\n"
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
   CbServerElasticIPAssociation:
     Type: AWS::EC2::EIPAssociation
     Properties:
@@ -310,6 +323,7 @@ Resources:
     Properties:
       VpcId: !Ref 'CbVPC'
       DhcpOptionsId: !Ref 'CbVPCDhcpOptions'
+
 Outputs:
   WebConsoleUrl:
     Value: !Join
